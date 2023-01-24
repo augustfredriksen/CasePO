@@ -1,0 +1,68 @@
+﻿@page "/"
+@using CasePO.Services
+@using System.Collections.Concurrent
+@using System.Diagnostics
+
+@inject CsvReaderService CsvReaderService
+@inject BatchProcessorService BatchProcessorService
+@inject ApiClientService ApiClientService
+@inject JsonDeserializerService JsonDeserializerService
+@inject CsvWriterService CsvWriterService
+
+<PageTitle>Case PO</PageTitle>
+<button class="btn btn-primary" @onclick="OnClick">Solve the case</button>
+@if (SolveTheCase().IsCompleted)
+{
+    <p>Task completed</p>
+}
+@code
+{
+    string rootPath = Path.GetFullPath("wwwroot");
+    private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(2);
+
+    public async Task OnClick()
+    {
+        await SolveTheCase();
+    }
+
+    public async Task SolveTheCase()
+    {
+        var inputFilePath = Path.Combine(rootPath, "input.csv");
+        var outputFilePath = Path.Combine(rootPath, "output.csv");
+
+        var orgNosAndNames = CsvReaderService.ReadFromCsv(inputFilePath);
+        var allOrgNos = orgNosAndNames.Select(k => k.OrganisasjonsNummer).ToList();
+
+        var batchSize = allOrgNos.Count > 10000 ? 10000 : allOrgNos.Count;
+        var batches = BatchProcessorService.CreateBatches(allOrgNos, batchSize);
+
+        var validKundeliste = new List<Kunde>();
+        var validOrgNosSet = new HashSet<string>();
+
+        foreach (var batch in batches)
+        {
+            var json = await ApiClientService.MakeBatchApiCall(batch);
+            var kunder = JsonDeserializerService.DeserializeBatchJson(json, orgNosAndNames);
+            validKundeliste.AddRange(kunder);
+            validOrgNosSet.UnionWith(kunder.Select(k => k.OrganisasjonsNummer).ToList());
+        }
+
+        var invalidOrgNos = allOrgNos.Where(orgNo => !validOrgNosSet.Contains(orgNo));
+        var invalidKundeliste = new ConcurrentBag<Kunde>();
+
+        await Parallel.ForEachAsync(invalidOrgNos, async (invalidOrgNo, token) =>
+        {
+            await _semaphore.WaitAsync(token);
+            var json = await ApiClientService.MakeIndividualApiCall(invalidOrgNo);
+            if (json != null)
+            {
+                invalidKundeliste.Add(JsonDeserializerService.DeserializeIndividualJson(json));
+            }
+            _semaphore.Release();
+        });
+
+        var output = validKundeliste.Concat(invalidKundeliste).ToList();
+        CsvWriterService.WriteToCsv(outputFilePath, output);
+    }
+}
+
