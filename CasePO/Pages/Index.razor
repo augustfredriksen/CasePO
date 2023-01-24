@@ -1,8 +1,8 @@
 ﻿@page "/"
 @using CasePO.Services
 @using System.Collections.Concurrent
-@using System.Diagnostics
 
+@inject IJSRuntime JsRuntime
 @inject CsvReaderService CsvReaderService
 @inject BatchProcessorService BatchProcessorService
 @inject ApiClientService ApiClientService
@@ -10,59 +10,161 @@
 @inject CsvWriterService CsvWriterService
 
 <PageTitle>Case PO</PageTitle>
-<button class="btn btn-primary" @onclick="OnClick">Solve the case</button>
-@if (SolveTheCase().IsCompleted)
-{
-    <p>Task completed</p>
-}
+<div class="mainDiv d-flex flex-row align-items-center justify-content-center">
+    @if (_isLoading)
+    {
+        <div class="dot1"> </div>
+        <div class="dot2"></div>
+        <div class="dot3"></div>
+    }
+    else if (Total == null && !_isLoading)
+    {
+        <button class="btn btn-primary btn-lg" @onclick="SolveTheCase">Solve the case</button>
+    }
+    else
+    {
+        <div>
+            <h2 class="m-3 text-center">Statistikk</h2>
+            <table class="table table-bordered border-secondary table-active text-center p-2" style="max-width: 30vw">
+                <thead>
+                <tr class="w-25">
+                    <th scope="col"></th>
+                    <th scope="col">ENK</th>
+                    <th scope="col">ANDRE</th>
+                    <th scope="col">AS 0-4 ansatte</th>
+                    <th scope="col">AS 5-10 ansatte</th>
+                    <th scope="col">AS > 10 ansatte</th>
+                    <th scope="col">Totalt</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr class="w-25">
+                
+                    <th scope="row">Antall</th>
+                    <td>@Enk</td>
+                    <td>@Andre</td>
+                    <td>@As0_4</td>
+                    <td>@As5_10</td>
+                    <td>@AsOver10</td>
+                    <td>@Total</td>
+                </tr>
+                <tr>
+                    <th scope="row">Prosent</th>
+                    <td>@($"{100 * (double)Enk / (double)Total:0.0}%")</td>
+                    <td>@($"{100 * (double)Andre / (double)Total:0.0}%")</td>
+                    <td>@($"{100 * (double)As0_4 / (double)Total:0.0}%")</td>
+                    <td>@($"{100 * (double)As5_10 / (double)Total:0.0}%")</td>
+                    <td>@($"{100 * (double)AsOver10 / (double)Total:0.0}%")</td>
+                    <td>100%</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+
+    }
+</div>
+
+
 @code
 {
-    string rootPath = Path.GetFullPath("wwwroot");
-    private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(2);
+    private int? Enk;
+    private int? Andre;
+    private int? As0_4;
+    private int? As5_10;
+    private int? AsOver10;
+    private int? Total;
 
-    public async Task OnClick()
-    {
-        await SolveTheCase();
-    }
+    private bool _isLoading = false;
+    private const string InputFilePath = "wwwroot/input.csv";
+    private const string OutputFilePath = "wwwroot/output.csv";
+    private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(2);
 
     public async Task SolveTheCase()
     {
-        var inputFilePath = Path.Combine(rootPath, "input.csv");
-        var outputFilePath = Path.Combine(rootPath, "output.csv");
+        _isLoading = true;
+        StateHasChanged();
+        var output = await GetOutputData();
+        CsvWriterService.WriteToCsv(OutputFilePath, output);
+        GetStatistics(output);
+        _isLoading = false;
+        StateHasChanged();
+    }
 
-        var orgNosAndNames = CsvReaderService.ReadFromCsv(inputFilePath);
-        var allOrgNos = orgNosAndNames.Select(k => k.OrganisasjonsNummer).ToList();
+    public async Task<List<Kunde>>  GetOutputData()
+    {
 
-        var batchSize = allOrgNos.Count > 10000 ? 10000 : allOrgNos.Count;
-        var batches = BatchProcessorService.CreateBatches(allOrgNos, batchSize);
-
-        var validKundeliste = new List<Kunde>();
-        var validOrgNosSet = new HashSet<string>();
-
-        foreach (var batch in batches)
+        try
         {
-            var json = await ApiClientService.MakeBatchApiCall(batch);
-            var kunder = JsonDeserializerService.DeserializeBatchJson(json, orgNosAndNames);
-            validKundeliste.AddRange(kunder);
-            validOrgNosSet.UnionWith(kunder.Select(k => k.OrganisasjonsNummer).ToList());
-        }
+            await JsRuntime.InvokeVoidAsync("console.time", "get output");
+            // Read orgNos and names from the input file.
+            var orgNosAndNames = CsvReaderService.ReadFromCsv(InputFilePath);
+            // Get all the orgNos from the orgNosAndNames.
+            var allOrgNos = orgNosAndNames.Select(k => k.OrganisasjonsNummer).ToList();
 
-        var invalidOrgNos = allOrgNos.Where(orgNo => !validOrgNosSet.Contains(orgNo));
-        var invalidKundeliste = new ConcurrentBag<Kunde>();
+            // Set the batch size for the API call. If the count of all orgNos is greater than 10000, then set the batch size to 10000.
+            var batchSize = allOrgNos.Count > 10000 ? 10000 : allOrgNos.Count;
+            // Create batches of orgNos
+            var batches = BatchProcessorService.CreateBatches(allOrgNos, batchSize);
 
-        await Parallel.ForEachAsync(invalidOrgNos, async (invalidOrgNo, token) =>
-        {
-            await _semaphore.WaitAsync(token);
-            var json = await ApiClientService.MakeIndividualApiCall(invalidOrgNo);
-            if (json != null)
+            // Initialize a list to store all the valid kunder.
+            var validKundeliste = new List<Kunde>();
+            // Initialize a set to store all the valid orgNos.
+            var validOrgNosSet = new HashSet<string>();
+
+            // Iterate over each batch and make API calls.
+            foreach (var batch in batches)
             {
-                invalidKundeliste.Add(JsonDeserializerService.DeserializeIndividualJson(json));
+                var json = await ApiClientService.MakeBatchApiCall(batch);
+                var kunder = JsonDeserializerService.DeserializeBatchJson(json, orgNosAndNames);
+                validKundeliste.AddRange(kunder);
+                validOrgNosSet.UnionWith(kunder.Select(k => k.OrganisasjonsNummer).ToList());
             }
-            _semaphore.Release();
-        });
 
-        var output = validKundeliste.Concat(invalidKundeliste).ToList();
-        CsvWriterService.WriteToCsv(outputFilePath, output);
+            // Get the orgNos that were not found in the batch API calls.
+            var invalidOrgNos = allOrgNos.Where(orgNo => !validOrgNosSet.Contains(orgNo));
+            // Initialize a bag to store all the invalid kunder.
+            var invalidKundeliste = new ConcurrentBag<Kunde>();
+
+            // Make individual API calls for each invalid orgNo to find out why the orgNo is invalid.
+            await Parallel.ForEachAsync(invalidOrgNos, async (invalidOrgNo, token) =>
+            {
+                await _semaphore.WaitAsync(token);
+                var json = await ApiClientService.MakeIndividualApiCall(invalidOrgNo);
+                if (json != null)
+                {
+                    invalidKundeliste.Add(JsonDeserializerService.DeserializeIndividualJson(json));
+                }
+                _semaphore.Release();
+            });
+
+            // Concatenate the valid and invalid kundelists and return the result.
+            var output = validKundeliste.Concat(invalidKundeliste).ToList();
+            return output;
+        }
+        finally
+        {
+            await JsRuntime.InvokeVoidAsync("console.timeEnd", "get output");
+        }
+    }
+
+    public async void GetStatistics(List<Kunde> kundeliste)
+    {
+        try
+        {
+            await JsRuntime.InvokeVoidAsync("console.time", "get statistics");
+            var lookup = kundeliste.ToLookup(k => k.Organisasjonsform?.Kode, k => k.AntallAnsatte);
+            Enk = lookup["ENK"].Count();
+            As0_4 = lookup["AS"].Count(x => x is >= 0 and <= 4);
+            As5_10 = lookup["AS"].Count(x => x is >= 5 and <= 10);
+            AsOver10 = lookup["AS"].Count(x => x is > 10);
+            Andre = kundeliste.Count - (Enk + As0_4 + As5_10 + AsOver10);
+            Total = (Enk + As0_4 + As5_10 + AsOver10 + Andre);
+        }
+        finally
+        {
+            await JsRuntime.InvokeVoidAsync("console.timeEnd", "get statistics");
+
+        }
     }
 }
 
