@@ -147,24 +147,15 @@
         }
     }
 
-    public async void GetStatistics(List<Kunde> kundeliste)
+    public void GetStatistics(List<Kunde> kundeliste)
     {
-        try
-        {
-            await JsRuntime.InvokeVoidAsync("console.time", "get statistics");
-            var lookup = kundeliste.ToLookup(k => k.Organisasjonsform?.Kode, k => k.AntallAnsatte);
-            Enk = lookup["ENK"].Count();
-            As0_4 = lookup["AS"].Count(x => x is >= 0 and <= 4);
-            As5_10 = lookup["AS"].Count(x => x is >= 5 and <= 10);
-            AsOver10 = lookup["AS"].Count(x => x is > 10);
-            Andre = kundeliste.Count - (Enk + As0_4 + As5_10 + AsOver10);
-            Total = (Enk + As0_4 + As5_10 + AsOver10 + Andre);
-        }
-        finally
-        {
-            await JsRuntime.InvokeVoidAsync("console.timeEnd", "get statistics");
-
-        }
+        var lookup = kundeliste.ToLookup(k => k.Organisasjonsform?.Kode, k => k.AntallAnsatte);
+        Enk = lookup["ENK"].Count();
+        As0_4 = lookup["AS"].Count(x => x is >= 0 and <= 4);
+        As5_10 = lookup["AS"].Count(x => x is >= 5 and <= 10);
+        AsOver10 = lookup["AS"].Count(x => x is > 10);
+        Andre = kundeliste.Count - (Enk + As0_4 + As5_10 + AsOver10);
+        Total = (Enk + As0_4 + As5_10 + AsOver10 + Andre);
     }
 }
 
